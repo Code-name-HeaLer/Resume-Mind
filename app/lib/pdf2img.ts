@@ -15,8 +15,12 @@ async function loadPdfJs(): Promise<any> {
     isLoading = true;
     // @ts-expect-error - pdfjs-dist/build/pdf.mjs is not a module
     loadPromise = import("pdfjs-dist/build/pdf.mjs").then((lib) => {
-        // Set the worker source to use local file
-        lib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+        // Let Vite bundle/serve the worker from the package
+        lib.GlobalWorkerOptions.workerSrc = new URL(
+            "pdfjs-dist/build/pdf.worker.mjs",
+            import.meta.url
+        ).toString();
+
         pdfjsLib = lib;
         isLoading = false;
         return lib;
@@ -49,32 +53,34 @@ export async function convertPdfToImage(
 
         await page.render({ canvasContext: context!, viewport }).promise;
 
-        return new Promise((resolve) => {
-            canvas.toBlob(
-                (blob) => {
-                    if (blob) {
-                        // Create a File from the blob with the same name as the pdf
-                        const originalName = file.name.replace(/\.pdf$/i, "");
-                        const imageFile = new File([blob], `${originalName}.png`, {
-                            type: "image/png",
-                        });
-
-                        resolve({
-                            imageUrl: URL.createObjectURL(blob),
-                            file: imageFile,
-                        });
-                    } else {
-                        resolve({
-                            imageUrl: "",
-                            file: null,
-                            error: "Failed to create image blob",
-                        });
-                    }
-                },
-                "image/png",
-                1.0
-            ); // Set quality to maximum (1.0)
+        // Prefer toBlob; fallback to toDataURL for browsers where toBlob is null
+        const blob: Blob | null = await new Promise((resolve) => {
+            canvas.toBlob((b) => resolve(b), "image/png", 1.0);
         });
+
+        let finalBlob = blob;
+        if (!finalBlob) {
+            const dataUrl = canvas.toDataURL("image/png", 1.0);
+            const res = fetch(dataUrl).then((r) => r.blob());
+            finalBlob = await res;
+        }
+
+        if (finalBlob) {
+            const originalName = file.name.replace(/\.pdf$/i, "");
+            const imageFile = new File([finalBlob], `${originalName}.png`, {
+                type: "image/png",
+            });
+            return {
+                imageUrl: URL.createObjectURL(finalBlob),
+                file: imageFile,
+            };
+        }
+
+        return {
+            imageUrl: "",
+            file: null,
+            error: "Failed to create image blob",
+        };
     } catch (err) {
         return {
             imageUrl: "",
